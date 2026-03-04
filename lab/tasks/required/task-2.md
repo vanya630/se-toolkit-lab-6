@@ -39,8 +39,9 @@ The back-end contains intentional bugs that you will discover and fix by writing
   - [1.5. Part C: Generate tests with an AI agent](#15-part-c-generate-tests-with-an-ai-agent)
     - [1.5.1. Generate tests](#151-generate-tests)
     - [1.5.2. Review and curate the tests](#152-review-and-curate-the-tests)
-    - [1.5.3. Run the full test suite](#153-run-the-full-test-suite)
-    - [1.5.4. Commit the curated tests](#154-commit-the-curated-tests)
+    - [1.5.3. Commit the curated tests](#153-commit-the-curated-tests)
+    - [1.5.4. Run the full test suite](#154-run-the-full-test-suite)
+    - [1.5.5. Address the testing findings](#155-address-the-testing-findings)
   - [1.6. Finish the task](#16-finish-the-task)
 - [2. Acceptance criteria](#2-acceptance-criteria)
 
@@ -501,8 +502,9 @@ Title: `[Task] Back-end Testing`
 <!-- no toc -->
 - [1.5.1. Generate tests](#151-generate-tests)
 - [1.5.2. Review and curate the tests](#152-review-and-curate-the-tests)
-- [1.5.3. Run the full test suite](#153-run-the-full-test-suite)
-- [1.5.4. Commit the curated tests](#154-commit-the-curated-tests)
+- [1.5.3. Commit the curated tests](#153-commit-the-curated-tests)
+- [1.5.4. Run the full test suite](#154-run-the-full-test-suite)
+- [1.5.5. Address the testing findings](#155-address-the-testing-findings)
 
 #### 1.5.1. Generate tests
 
@@ -547,7 +549,20 @@ Title: `[Task] Back-end Testing`
    #     ...
    ```
 
-#### 1.5.3. Run the full test suite
+#### 1.5.3. Commit the curated tests
+
+> [!NOTE]
+> Commit new tests to be able to improve them later without losing the history of changes.
+
+1. [Commit changes](../../../wiki/git-workflow.md#commit-changes).
+
+   Use the following commit message:
+
+   ```text
+   test: add curated AI-generated unit tests
+   ```
+
+#### 1.5.4. Run the full test suite
 
 1. To run the full test suite,
 
@@ -559,20 +574,15 @@ Title: `[Task] Back-end Testing`
 
 2. All tests (including the curated AI-generated ones) should pass.
 
-> [!NOTE]
-> If a test fails, decide whether the test or the implementation is wrong.
-> If the test is flawed, go back to [1.5.2](#152-review-and-curate-the-tests) and fix or discard it.
-> If the test reveals a real bug, fix the implementation.
+#### 1.5.5. Address the testing findings
 
-#### 1.5.4. Commit the curated tests
+1. If a test fails, decide whether the test or the implementation is wrong.
 
-1. [Commit changes](../../../wiki/git-workflow.md#commit-changes).
+2. If the test is flawed, go back to [1.5.2](#152-review-and-curate-the-tests) and fix or discard it.
 
-   Use the following commit message:
-
-   ```text
-   test: add curated AI-generated unit tests
-   ```
+3. If the test reveals a real bug:
+   1. Fix the implementation.
+   2. [Commit changes](../../../wiki/git-workflow.md#commit-changes).
 
 ### 1.6. Finish the task
 
