@@ -27,38 +27,52 @@ from dotenv import load_dotenv
 # Maximum number of tool calls per question
 MAX_TOOL_CALLS = 10
 
-# System prompt for the documentation agent
-SYSTEM_PROMPT = """You are a documentation agent that answers questions about the project by reading its documentation.
+# System prompt for the system agent
+SYSTEM_PROMPT = """You are a system agent that answers questions about the project using multiple sources.
 
-You have access to two tools:
-1. list_files(path) - List files and directories at a given path
-2. read_file(path) - Read the contents of a file
+You have access to three types of tools:
+
+1. **Wiki tools** (list_files, read_file):
+   - Use these to read documentation in the wiki/ directory
+   - Good for: workflow questions, how-to guides, policies
+
+2. **Source code tool** (read_file):
+   - Use this to read source code files (.py, .yml, .md, etc.)
+   - Good for: framework identification, code structure, bug diagnosis
+
+3. **API tool** (query_api):
+   - Use this to query the live backend API
+   - Good for: current data counts, status codes, analytics, error messages
+   - ALWAYS use for questions about "how many", "what is the current", "query"
 
 To answer a question:
-1. First use list_files("wiki") to discover available documentation files
-2. Then use read_file() to read relevant files that might contain the answer
-3. Find the exact section that answers the question
-4. Provide a concise answer with a source reference
+1. Identify what type of information is needed:
+   - Documentation? → Use list_files + read_file on wiki/
+   - Source code? → Use read_file on backend/, docker-compose.yml, etc.
+   - Live data? → Use query_api with appropriate endpoint
+2. Use the appropriate tool(s)
+3. Provide a concise answer with source reference
 
 Rules:
-- Always use tools before giving a final answer
-- Include the source field with the file path and section anchor (e.g., wiki/git.md#merge-conflicts)
+- For data questions (counts, statistics), ALWAYS use query_api first
+- For code questions (framework, structure), read the source files
+- For workflow questions, check the wiki documentation
+- Include source references when possible
+- If you get an API error, read the source code to diagnose the bug
 - Be concise and accurate
-- If you cannot find the answer in the documentation, say so honestly
-- Use the tool_calls format when calling tools
 """
 
 # Tool definitions for LLM function calling
 TOOLS = [
     {
         "name": "read_file",
-        "description": "Read a file from the project repository. Use this to read documentation files in the wiki directory.",
+        "description": "Read a file from the project repository. Use this to read documentation files in the wiki directory or source code files.",
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Relative path from project root (e.g., 'wiki/git.md' or 'wiki/git-workflow.md')"
+                    "description": "Relative path from project root (e.g., 'wiki/git.md', 'backend/app/main.py', 'docker-compose.yml')"
                 }
             },
             "required": ["path"]
@@ -72,10 +86,33 @@ TOOLS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Relative directory path from project root (e.g., 'wiki' or 'docs')"
+                    "description": "Relative directory path from project root (e.g., 'wiki', 'backend/app/routers')"
                 }
             },
             "required": ["path"]
+        }
+    },
+    {
+        "name": "query_api",
+        "description": "Query the deployed backend API. Use this to get live data from the system - item counts, status codes, analytics, errors. ALWAYS use for questions about 'how many', 'what is the current', or 'query'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "description": "HTTP method (GET, POST, PUT, DELETE)",
+                    "enum": ["GET", "POST", "PUT", "DELETE"]
+                },
+                "path": {
+                    "type": "string",
+                    "description": "API endpoint path (e.g., '/items/', '/analytics/completion-rate', '/learners/')"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Optional JSON request body for POST/PUT requests (e.g., '{\"key\": \"value\"}')"
+                }
+            },
+            "required": ["method", "path"]
         }
     }
 ]
@@ -83,27 +120,32 @@ TOOLS = [
 
 def load_llm_config() -> dict:
     """
-    Load LLM configuration from environment variables.
+    Load LLM and API configuration from environment variables.
 
     Reads from:
     1. Direct environment variables (highest priority)
-    2. .env.agent.secret file (for local development)
+    2. .env.agent.secret and .env.docker.secret files (for local development)
 
     Returns:
-        dict with keys: LLM_API_KEY, LLM_API_BASE, LLM_MODEL
+        dict with keys: LLM_API_KEY, LLM_API_BASE, LLM_MODEL, LMS_API_KEY
 
     Raises:
         SystemExit: If required configuration is missing
     """
-    # First, try to load from .env.agent.secret file (local development)
-    env_file = Path(__file__).parent / ".env.agent.secret"
-    if env_file.exists():
-        load_dotenv(env_file)
+    # First, try to load from .env files (local development)
+    env_file_agent = Path(__file__).parent / ".env.agent.secret"
+    env_file_docker = Path(__file__).parent / ".env.docker.secret"
+    
+    if env_file_agent.exists():
+        load_dotenv(env_file_agent)
+    if env_file_docker.exists():
+        load_dotenv(env_file_docker)
 
     # Read from environment variables (works for both local and autochecker)
     api_key = os.getenv("LLM_API_KEY")
     api_base = os.getenv("LLM_API_BASE")
     model = os.getenv("LLM_MODEL")
+    lms_api_key = os.getenv("LMS_API_KEY")
 
     if not api_key:
         print("Error: LLM_API_KEY not found in environment variables", file=sys.stderr)
@@ -117,10 +159,14 @@ def load_llm_config() -> dict:
         print("Error: LLM_MODEL not found in environment variables", file=sys.stderr)
         sys.exit(1)
 
+    # LMS_API_KEY is optional (only needed for query_api tool)
+    # Don't exit if missing - the tool will return an error instead
+
     return {
         "api_key": api_key,
         "api_base": api_base,
         "model": model,
+        "lms_api_key": lms_api_key,
     }
 
 
@@ -242,12 +288,68 @@ def list_files(path: str) -> str:
         return f"Error listing directory: {e}"
 
 
+def query_api(method: str, path: str, body: str = None) -> str:
+    """
+    Query the backend API with authentication.
+
+    Args:
+        method: HTTP method (GET, POST, PUT, DELETE)
+        path: API endpoint path
+        body: Optional JSON request body for POST/PUT
+
+    Returns:
+        JSON string with status_code and response body
+    """
+    # Read config from environment variables
+    api_base = os.getenv("AGENT_API_BASE_URL", "http://localhost:42002")
+    lms_api_key = os.getenv("LMS_API_KEY")
+
+    if not lms_api_key:
+        return json.dumps({"error": "LMS_API_KEY not configured in environment"})
+
+    url = f"{api_base}{path}"
+
+    headers = {
+        "Authorization": f"Bearer {lms_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(timeout=30) as client:
+            if method == "GET":
+                response = client.get(url, headers=headers)
+            elif method == "POST":
+                request_body = json.loads(body) if body else {}
+                response = client.post(url, headers=headers, json=request_body)
+            elif method == "PUT":
+                request_body = json.loads(body) if body else {}
+                response = client.put(url, headers=headers, json=request_body)
+            elif method == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                return json.dumps({"error": f"Unsupported method: {method}"})
+
+            return json.dumps({
+                "status_code": response.status_code,
+                "body": response.text,
+            })
+
+    except httpx.TimeoutException:
+        return json.dumps({"error": f"API timeout after 30 seconds"})
+    except httpx.ConnectError as e:
+        return json.dumps({"error": f"Cannot connect to API at {url}: {e}"})
+    except json.JSONDecodeError as e:
+        return json.dumps({"error": f"Invalid JSON in request body: {e}"})
+    except Exception as e:
+        return json.dumps({"error": f"API request failed: {e}"})
+
+
 def execute_tool(name: str, args: dict) -> str:
     """
     Execute a tool by name with given arguments.
 
     Args:
-        name: Tool name (read_file or list_files)
+        name: Tool name (read_file, list_files, or query_api)
         args: Tool arguments dict
 
     Returns:
@@ -257,6 +359,12 @@ def execute_tool(name: str, args: dict) -> str:
         return read_file(args.get("path", ""))
     elif name == "list_files":
         return list_files(args.get("path", ""))
+    elif name == "query_api":
+        return query_api(
+            args.get("method", "GET"),
+            args.get("path", ""),
+            args.get("body")
+        )
     else:
         return f"Error: Unknown tool: {name}"
 
