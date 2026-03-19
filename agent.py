@@ -9,8 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-import httpx
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 MAX_TOOL_CALLS = 10
 FILE_READ_LIMIT = 20000
@@ -133,17 +133,25 @@ def tool_query_api(args: dict[str, Any]) -> str:
     if payload is not None:
         headers["Content-Type"] = "application/json"
     url = f"{api_base}{path}"
+    data: bytes | None = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
     try:
-        with httpx.Client(timeout=20.0) as client:
-            response = client.request(method=method, url=url, headers=headers, json=payload)
+        request = urlrequest.Request(url=url, data=data, headers=headers, method=method)
+        with urlrequest.urlopen(request, timeout=20.0) as response:
+            status_code = response.getcode()
+            raw_body = response.read().decode("utf-8", errors="replace")
+    except urlerror.HTTPError as exc:
+        status_code = exc.code
+        raw_body = exc.read().decode("utf-8", errors="replace")
     except Exception as exc:
         return f"error: query_api failed: {exc}"
 
     try:
-        body: Any = response.json()
+        body: Any = json.loads(raw_body)
     except Exception:
-        body = response.text
-    wrapped = {"status_code": response.status_code, "body": body}
+        body = raw_body
+    wrapped = {"status_code": status_code, "body": body}
     return json.dumps(wrapped, ensure_ascii=True)
 
 
@@ -330,10 +338,26 @@ class LLMClient:
             "tool_choice": "auto",
             "temperature": 0,
         }
-        with httpx.Client(timeout=55.0) as client:
-            response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
+        body_bytes = json.dumps(payload).encode("utf-8")
+        request = urlrequest.Request(
+            url=url,
+            data=body_bytes,
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(request, timeout=55.0) as response:
+                raw_response = response.read().decode("utf-8", errors="replace")
+        except urlerror.HTTPError as exc:
+            err_body = exc.read().decode("utf-8", errors="replace")
+            raise AgentError(f"LLM API returned HTTP {exc.code}: {err_body[:200]}") from exc
+        except Exception as exc:
+            raise AgentError(f"LLM API request failed: {exc}") from exc
+
+        try:
+            data = json.loads(raw_response)
+        except Exception as exc:
+            raise AgentError("LLM response is not valid JSON") from exc
         choices = data.get("choices") or []
         if not choices:
             raise AgentError("LLM response has no choices")
